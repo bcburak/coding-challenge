@@ -34,31 +34,6 @@ public class DocumentProcessingService
         _excelSheetAnalysisService = excelSheetAnalysisService;
     }
 
-    //public async Task ProcessDocumentsAsync(List<Document?> documents, bool shouldGenerateOverviews = true, bool shouldDetectSectionTitles = true, Func<string?, Task>? onDocumentProcessed = null, CancellationToken cancellationToken = default)
-    //{
-    //    _logger.LogInformation("Processing {CountDocuments} documents.", documents.Count);
-    //    await DocumentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
-    //    await ExcelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
-    //    foreach (Document? document in documents)
-    //    {
-    //        if (document is null)
-    //        {
-    //            _logger.LogError("Document is null.");
-    //            continue;
-    //        }
-
-    //        _logger.LogInformation("Processing document {DocumentName}.", document.Name);
-    //        await ProcessPagesAsync(document, shouldGenerateOverviews, shouldDetectSectionTitles).ConfigureAwait(false);
-    //        if (onDocumentProcessed is not null)
-    //        {
-    //            await onDocumentProcessed(document.Name).ConfigureAwait(false);
-    //        }
-
-    //        _logger.LogInformation("Document {DocumentName} processed.", document.Name);
-    //    }
-
-    //    _logger.LogInformation("Documents processed.");
-    //}
 
     public async Task ProcessDocumentsAsync(List<Document?> documents, bool shouldGenerateOverviews = true, bool shouldDetectSectionTitles = true, Func<string?, Task>? onDocumentProcessed = null, CancellationToken cancellationToken = default)
     {
@@ -90,6 +65,7 @@ public class DocumentProcessingService
         await _documentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
         await _excelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
     }
+    //Could be divide minor methods to make it more readeble
     public async Task LoadContextToWorkflowAsync(ICollection<DocumentInfo> documentInfos, Workflow workflow, int blockIndex = -1, Func<string?, Task>? onDocumentProcessed = null, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Loading context to workflow handler with {CountDocuments} documents.", documentInfos.Count);
@@ -375,7 +351,7 @@ public class DocumentProcessingService
     {
         _logger.LogInformation("Processing Excel document {DocumentName}.", document.Name);
 
-        CheckIfFileIsNull(document);
+        EnsureDocumentHasFile(document);
 
         if (document.Pages.Count == 0)
         {
@@ -398,50 +374,58 @@ public class DocumentProcessingService
 
     private async Task ProcessMediaPagesAsync(Document document, bool shouldUseOcr, bool shouldGenerateOverviews, bool shouldDetectSectionTitles)
     {
-        _logger.LogInformation("Processing media document {DocumentName}.", document.Name);
-        CheckIfFileIsNull(document);
+        _logger.LogInformation("Processing media document '{DocumentName}'.", document.Name);
+        EnsureDocumentHasFile(document);
 
         Page page = document[1];
         page.Image ??= new(new BinaryData(document.File.Bytes), document.MediaType);
-        if (!shouldUseOcr)
+
+        if (shouldUseOcr)
         {
-            return;
+            _logger.LogInformation("Processing media document {DocumentName} with OCR.", document.Name);
+            string? rawText = shouldUseOcr ? throw new NotImplementedException() : null;
+            page.RawText ??= rawText?.Replace("\0", "");
+            page.Text ??= rawText?.Replace("\0", "");
+
+            if (shouldGenerateOverviews)
+            {
+                await _documentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
+            }
+
+            if (shouldDetectSectionTitles)
+            {
+                await _documentAnalysisService.DetectSectionTitlesAsync(document).ConfigureAwait(false);
+            }
+
+            if (!IsPageEmbeddingValid(page))
+            {
+                await GeneratePageEmbeddingAsync(page, document.Name);
+            }
         }
 
-        _logger.LogInformation("Processing media document {DocumentName} with OCR.", document.Name);
-        string? rawText = shouldUseOcr ? throw new NotImplementedException() : null;
-        page.RawText ??= rawText?.Replace("\0", "");
-        page.Text ??= rawText?.Replace("\0", "");
-        if (shouldGenerateOverviews)
-        {
-            await _documentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
-        }
+    }
 
-        if (shouldDetectSectionTitles)
-        {
-            await _documentAnalysisService.DetectSectionTitlesAsync(document).ConfigureAwait(false);
-        }
+    private async Task GeneratePageEmbeddingAsync(Page page, string documentName)
+    {
 
-        if (IsPageEmbeddingValid(page))
-        {
-            _logger.LogDebug("Document {DocumentName} already has an embedding for page {PageNumber}.", document.Name, page.PageNumber);
-            return;
-        }
 
-        if (string.IsNullOrWhiteSpace(page.Overview))
-        {
-            _logger.LogError("Failed to get overview for page {PageNumber}.", page.PageNumber);
-        }
+        double[]? vector = (await EmbeddingsConnector
+            .GetResponseAsync([page.Overview ?? "An overview for this content is currently unavailable"])
+            .ConfigureAwait(false)).FirstOrDefault();
 
-        double[]? vector = (await EmbeddingsConnector.GetResponseAsync([page.Overview ?? "An overview for this content is currently unavailable"]).ConfigureAwait(false)).FirstOrDefault();
         string modelName = page.Overview is null || vector is null ? ERROR_VECTOR_MODEL : EmbeddingsConnector.MODEL_NAME;
-        page.EmbeddingVector = new(modelName, vector ?? []);
+        page.EmbeddingVector = new(modelName, vector ?? Array.Empty<double>());
+
+        if (modelName == ERROR_VECTOR_MODEL)
+        {
+            _logger.LogWarning("Failed to generate embedding for page {PageNumber} in document '{DocumentName}'.", page.PageNumber, documentName);
+        }
     }
 
     private async Task ProcessPdfPagesAsync(Document document, bool shouldGenerateOverviews, bool shouldDetectSectionTitles)
     {
         _logger.LogInformation("Processing PDF document {DocumentName}.", document.Name);
-        CheckIfFileIsNull(document);
+        EnsureDocumentHasFile(document);
 
         await GetPdfPagesRawTextsAsync(document).ConfigureAwait(false);
         if (shouldGenerateOverviews)
@@ -457,53 +441,78 @@ public class DocumentProcessingService
         await GetEmbeddingsAsync(document).ConfigureAwait(false);
     }
 
-
-    //will be refactor
+    //more readeble logs and error handling added
     private async Task GetEmbeddingsAsync(Document document)
     {
         var pagesToEmbed = document.Pages.Where(p => !IsPageEmbeddingValid(p) && !string.IsNullOrWhiteSpace(p.Overview)).ToList();
         if (pagesToEmbed.Count == 0)
         {
+            _logger.LogInformation("Document {DocumentName} already has embeddings for all pages.", document.Name);
             return;
         }
+
         _logger.LogInformation(
-                      "Embedding {CountToEmbed} pages for document {DocumentName}.",
-                      pagesToEmbed.Count, document.Name
-                  );
-        int countAlreadyEmbedded = document.Pages.Where(p => p.EmbeddingVector is not null).Count();
-        int countErroneous = document.Pages.Where(p => p.EmbeddingVector?.Model == ERROR_VECTOR_MODEL).Count();
-        _logger.LogInformation("Document {DocumentName} has {CountPages} pages, {CountAlreadyEmbedded} pages already embedded, {CountErroneous} pages with erroneous embeddings, {CountToEmbed} pages to embed.", document.Name, document.Pages.Count, countAlreadyEmbedded, countErroneous, pagesToEmbed.Count);
+                "Processing embeddings for document '{DocumentName}': Total Pages = {TotalPages}, Embedded = {Embedded}, Erroneous = {Erroneous}, To Embed = {ToEmbed}.",
+                document.Name,
+                document.Pages.Count,
+                document.Pages.Count(p => p.EmbeddingVector is not null),
+                document.Pages.Count(p => p.EmbeddingVector?.Model == ERROR_VECTOR_MODEL),
+                pagesToEmbed.Count);
+
+        await ProcessEmbeddingBatchesAsync(pagesToEmbed);
+    }
+
+    private async Task ProcessEmbeddingBatchesAsync(List<Page> pagesToEmbed)
+    {
+        const int batchSize = 50;
+        var allEmbeddings = new List<double[]>();
+        var texts = pagesToEmbed
+            .Select(p => p.Overview ?? "An overview for this content is currently unavailable")
+            .ToList();
 
 
-        var texts = pagesToEmbed.Select(p => p.Overview ?? $"An overview for this content is currently unavailable").ToList();
-        List<double[]> allEmbeddings = [];
-        int pagesInBatch = 50;
-        for (int i = 0; i < texts.Count; i += pagesInBatch)
+        for (int i = 0; i < texts.Count; i += batchSize)
         {
-            var batch = texts.Skip(i).Take(pagesInBatch).ToList();
-            List<double[]> batchEmbeddings = await EmbeddingsConnector.GetResponseAsync(batch).ConfigureAwait(false);
+            var batch = texts.Skip(i).Take(batchSize).ToList();
+            var batchEmbeddings = await EmbeddingsConnector.GetResponseAsync(batch).ConfigureAwait(false);
+
+            if (batchEmbeddings.Count != batch.Count)
+            {
+                _logger.LogWarning("Mismatch between input size and received embeddings. Expected {Expected}, got {Actual}.",
+                    batch.Count, batchEmbeddings.Count);
+            }
+
             allEmbeddings.AddRange(batchEmbeddings);
         }
 
-        for (int i = 0; i < pagesToEmbed.Count; i++)
+        AssignEmbeddingsToPages(pagesToEmbed, allEmbeddings);
+    }
+
+    private void AssignEmbeddingsToPages(List<Page> pages, List<double[]> embeddings)
+    {
+        for (int i = 0; i < pages.Count; i++)
         {
-            double[]? vector = i < allEmbeddings.Count ? allEmbeddings[i] : null;
-            string modelName = pagesToEmbed[i].Overview is null || vector is null ? ERROR_VECTOR_MODEL : EmbeddingsConnector.MODEL_NAME;
+            var vector = i < embeddings.Count ? embeddings[i] : null;
+            var modelName = pages[i].Overview is null || vector is null ? ERROR_VECTOR_MODEL : EmbeddingsConnector.MODEL_NAME;
+
             if (modelName == ERROR_VECTOR_MODEL)
             {
-                _logger.LogWarning("Failed to get embedding for page {PageNumber}.", pagesToEmbed[i].PageNumber);
+                _logger.LogWarning("Failed to get embedding for page {PageNumber}.", pages[i].PageNumber);
             }
 
-            EmbeddingVector embeddingVector = pagesToEmbed[i].EmbeddingVector ?? new(modelName, []);
+            pages[i].EmbeddingVector = new EmbeddingVector(modelName, vector ?? Array.Empty<double>());
+
+            EmbeddingVector embeddingVector = pages[i].EmbeddingVector ?? new(modelName, []);
             embeddingVector.Model = modelName;
             embeddingVector.Vector = vector ?? [];
-            pagesToEmbed[i].EmbeddingVector = embeddingVector;
+            pages[i].EmbeddingVector = embeddingVector;
         }
+
     }
 
     private async Task GetPdfPagesRawTextsAsync(Document document)
     {
-        CheckIfFileIsNull(document);
+        EnsureDocumentHasFile(document);
         using var ms = new MemoryStream(document.File.Bytes);
         using PdfDocument pdf = new(ms);
         Dictionary<int, string> pagesTexts = await PdfExtractor.ExtractPaginatedTextAsync(pdf, Enumerable.Range(1, pdf.Pages.Count)).ConfigureAwait(false);
@@ -513,7 +522,7 @@ public class DocumentProcessingService
         }
     }
 
-    private void CheckIfFileIsNull(Document document)
+    private void EnsureDocumentHasFile(Document document)
     {
         if (document.File is null)
         {
