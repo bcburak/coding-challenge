@@ -1,26 +1,27 @@
 using Acme.Entities.Documents;
+using Acme.Services.Interfaces;
 
 namespace Acme.Services;
 
-public class DocumentAnalysisService
+public class DocumentAnalysisService : IDocumentAnalysisService
 {
-    internal DocumentAnalysisService()
+    public DocumentAnalysisService()
     {
     }
 
-    public static async Task SetupPromptsAsync()
+    public async Task SetupPromptsAsync()
     {
         await Task.CompletedTask;
     }
 
-    public static async Task<string?> GenerateTopicsFromOverviewsAsync(List<Page> pages)
+    public async Task<string?> GenerateTopicsFromOverviewsAsync(List<Page> pages)
     {
         await Task.CompletedTask;
 
         return "Topics";
     }
 
-    public static async Task GenerateOverviewsAsync(Document document, bool forHfMonitoring = false)
+    public async Task GenerateOverviewsAsync(Document document, bool forHfMonitoring = false)
     {
         foreach (Page page in document.Pages)
         {
@@ -30,12 +31,12 @@ public class DocumentAnalysisService
         await Task.CompletedTask;
     }
 
-    public static async Task DetectSectionTitlesAsync(Document document)
+    public async Task DetectSectionTitlesAsync(Document document)
     {
         await Task.CompletedTask;
     }
 
-    public static void GenerateTocUsingModelToc(Document document, string modelToc)
+    public void GenerateTocUsingModelToc(Document document, string modelToc)
     {
     }
 }

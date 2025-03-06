@@ -1,20 +1,21 @@
-﻿using Aspose.Cells;
-using Acme.Entities.Documents;
+﻿using Acme.Entities.Documents;
+using Acme.Services.Interfaces;
+using Aspose.Cells;
 
 namespace Acme.Services;
 
-public class ExcelSheetAnalysisService
+public class ExcelSheetAnalysisService : IExcelSheetAnalysisService
 {
     public ExcelSheetAnalysisService()
     {
     }
 
-    public static async Task SetupPromptsAsync()
+    public async Task SetupPromptsAsync()
     {
         await Task.CompletedTask;
     }
 
-    public static async Task ChunkSheetsAsync(
+    public async Task ChunkSheetsAsync(
         Document document,
         Workbook workbook,
         int chunkSize = -1)

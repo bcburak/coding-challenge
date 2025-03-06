@@ -1,10 +1,11 @@
-﻿using Aspose.Cells;
-using CsvHelper;
-using Acme.Common.Enums;
+﻿using Acme.Common.Enums;
 using Acme.Core;
 using Acme.Entities.Documents;
 using Acme.Entities.Workflows;
 using Acme.Entities.Workflows.Enums;
+using Acme.Services.Interfaces;
+using Aspose.Cells;
+using CsvHelper;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
 using System.Text;
@@ -16,32 +17,67 @@ public class DocumentProcessingService
 {
     private const string ERROR_VECTOR_MODEL = "ERROR";
 
-    private readonly ILogger _logger;
+    private readonly ILogger<DocumentProcessingService> _logger;
+    private readonly IDocumentAnalysisService _documentAnalysisService;
+    private readonly IExcelSheetAnalysisService _excelSheetAnalysisService;
 
-    internal DocumentProcessingService(ILogger<DocumentProcessingService> logger)
+    // Made these services injected to the constructor to make the class more readeble and testable 
+    //TODO: Could be improved by using a repository pattern to handle entity classes
+
+    public DocumentProcessingService(
+          ILogger<DocumentProcessingService> logger,
+          IDocumentAnalysisService documentAnalysisService,
+          IExcelSheetAnalysisService excelSheetAnalysisService)
     {
         _logger = logger;
+        _documentAnalysisService = documentAnalysisService;
+        _excelSheetAnalysisService = excelSheetAnalysisService;
     }
+
+    //public async Task ProcessDocumentsAsync(List<Document?> documents, bool shouldGenerateOverviews = true, bool shouldDetectSectionTitles = true, Func<string?, Task>? onDocumentProcessed = null, CancellationToken cancellationToken = default)
+    //{
+    //    _logger.LogInformation("Processing {CountDocuments} documents.", documents.Count);
+    //    await DocumentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
+    //    await ExcelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
+    //    foreach (Document? document in documents)
+    //    {
+    //        if (document is null)
+    //        {
+    //            _logger.LogError("Document is null.");
+    //            continue;
+    //        }
+
+    //        _logger.LogInformation("Processing document {DocumentName}.", document.Name);
+    //        await ProcessPagesAsync(document, shouldGenerateOverviews, shouldDetectSectionTitles).ConfigureAwait(false);
+    //        if (onDocumentProcessed is not null)
+    //        {
+    //            await onDocumentProcessed(document.Name).ConfigureAwait(false);
+    //        }
+
+    //        _logger.LogInformation("Document {DocumentName} processed.", document.Name);
+    //    }
+
+    //    _logger.LogInformation("Documents processed.");
+    //}
 
     public async Task ProcessDocumentsAsync(List<Document?> documents, bool shouldGenerateOverviews = true, bool shouldDetectSectionTitles = true, Func<string?, Task>? onDocumentProcessed = null, CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Processing {CountDocuments} documents.", documents.Count);
-        await DocumentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
-        await ExcelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
-        foreach (Document? document in documents)
+        if (documents is null || documents.Count == 0)
         {
-            if (document is null)
-            {
-                _logger.LogError("Document is null.");
-                continue;
-            }
+            _logger.LogWarning("No documents provided for processing.");
+            return;
+        }
 
-            _logger.LogInformation("Processing document {DocumentName}.", document.Name);
-            await ProcessPagesAsync(document, shouldGenerateOverviews, shouldDetectSectionTitles).ConfigureAwait(false);
+        _logger.LogInformation("Processing {CountDocuments} documents.", documents.Count);
+        await SetupAnalysisServicesAsync();
+
+        foreach (var document in documents)
+        {
+            _logger.LogInformation("Processing document {DocumentName}.", document!.Name);
+            await ProcessPagesAsync(document, shouldGenerateOverviews, shouldDetectSectionTitles);
+
             if (onDocumentProcessed is not null)
-            {
-                await onDocumentProcessed(document.Name).ConfigureAwait(false);
-            }
+                await onDocumentProcessed(document.Name);
 
             _logger.LogInformation("Document {DocumentName} processed.", document.Name);
         }
@@ -49,11 +85,16 @@ public class DocumentProcessingService
         _logger.LogInformation("Documents processed.");
     }
 
+    private async Task SetupAnalysisServicesAsync()
+    {
+        await _documentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
+        await _excelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
+    }
     public async Task LoadContextToWorkflowAsync(ICollection<DocumentInfo> documentInfos, Workflow workflow, int blockIndex = -1, Func<string?, Task>? onDocumentProcessed = null, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("Loading context to workflow handler with {CountDocuments} documents.", documentInfos.Count);
-        await DocumentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
-        await ExcelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
+        await _documentAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
+        await _excelSheetAnalysisService.SetupPromptsAsync().ConfigureAwait(false);
         List<Block> allBlocks = workflow.GetAllBlocks();
         foreach (Block block in allBlocks)
         {
@@ -77,7 +118,7 @@ public class DocumentProcessingService
         if (WorkflowUsesTopics(workflow))
         {
             _logger.LogInformation("Workflow uses topics, generating topics.");
-            workflow.AllPagesTopics ??= await DocumentAnalysisService.GenerateTopicsFromOverviewsAsync(workflow.AllPages).ConfigureAwait(false);
+            workflow.AllPagesTopics ??= await _documentAnalysisService.GenerateTopicsFromOverviewsAsync(workflow.AllPages).ConfigureAwait(false);
         }
 
         if (WorkflowUsesToc(workflow))
@@ -120,7 +161,7 @@ public class DocumentProcessingService
                 return;
             }
 
-            DocumentAnalysisService.GenerateTocUsingModelToc(document, tocModel);
+            _documentAnalysisService.GenerateTocUsingModelToc(document, tocModel);
             if (onDocumentProcessed is not null)
             {
                 await onDocumentProcessed(document.Name).ConfigureAwait(false);
@@ -192,16 +233,25 @@ public class DocumentProcessingService
 
     private async Task ProcessPagesAsync(Document document, bool shouldGenerateOverviews, bool shouldDetectSectionTitles)
     {
-        await (document.MediaType switch
+        switch (document.MediaType)
         {
-            MediaType.ApplicationPdf => ProcessPdfPagesAsync(document, shouldGenerateOverviews, shouldDetectSectionTitles),
-            MediaType.ImageJpeg => ProcessMediaPagesAsync(document, shouldUseOcr: false, shouldGenerateOverviews, shouldDetectSectionTitles),
-            MediaType.ImagePng => ProcessMediaPagesAsync(document, shouldUseOcr: false, shouldGenerateOverviews, shouldDetectSectionTitles),
-            MediaType.TextCsv => ProcessCsvPagesAsync(document),
-            MediaType.ApplicationVndMsExcel => ProcessExcelPagesAsync(document, shouldGenerateOverviews),
-            MediaType.ApplicationVndOpenXmlFormatsOfficeDocumentSpreadsheetMlSheet => ProcessExcelPagesAsync(document, shouldGenerateOverviews),
-            _ => throw new InvalidOperationException("Document media type is unknown.")
-        }).ConfigureAwait(false);
+            case MediaType.ApplicationPdf:
+                await ProcessPdfPagesAsync(document, shouldGenerateOverviews, shouldDetectSectionTitles); //  i guess more readeable
+                break;
+            case MediaType.ImageJpeg:
+            case MediaType.ImagePng:
+                await ProcessMediaPagesAsync(document, false, shouldGenerateOverviews, shouldDetectSectionTitles);
+                break;
+            case MediaType.TextCsv:
+                await ProcessCsvPagesAsync(document);
+                break;
+            case MediaType.ApplicationVndMsExcel:
+            case MediaType.ApplicationVndOpenXmlFormatsOfficeDocumentSpreadsheetMlSheet:
+                await ProcessExcelPagesAsync(document, shouldGenerateOverviews);
+                break;
+            default:
+                throw new InvalidOperationException("Unknown document media type.");
+        }
     }
 
     private void AppendPagesToWorkflow(Workflow workflow, Document document)
@@ -324,17 +374,14 @@ public class DocumentProcessingService
     private async Task ProcessExcelPagesAsync(Document document, bool shouldGenerateOverviews)
     {
         _logger.LogInformation("Processing Excel document {DocumentName}.", document.Name);
-        if (document.File is null)
-        {
-            _logger.LogError("Document {DocumentName} does not have a File.", document.Name);
-            return;
-        }
+
+        CheckIfFileIsNull(document);
 
         if (document.Pages.Count == 0)
         {
             using var ms = new MemoryStream(document.File?.Bytes ?? throw new InvalidOperationException("Document file is null."));
             var workbook = new Workbook(ms);
-            await ExcelSheetAnalysisService.ChunkSheetsAsync(document, workbook).ConfigureAwait(false);
+            await _excelSheetAnalysisService.ChunkSheetsAsync(document, workbook).ConfigureAwait(false);
         }
         else
         {
@@ -343,7 +390,7 @@ public class DocumentProcessingService
 
         if (shouldGenerateOverviews)
         {
-            await DocumentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
+            await _documentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
         }
 
         await GetEmbeddingsAsync(document).ConfigureAwait(false);
@@ -352,11 +399,7 @@ public class DocumentProcessingService
     private async Task ProcessMediaPagesAsync(Document document, bool shouldUseOcr, bool shouldGenerateOverviews, bool shouldDetectSectionTitles)
     {
         _logger.LogInformation("Processing media document {DocumentName}.", document.Name);
-        if (document.File is null)
-        {
-            _logger.LogError("Document {DocumentName} does not have a File.", document.Name);
-            return;
-        }
+        CheckIfFileIsNull(document);
 
         Page page = document[1];
         page.Image ??= new(new BinaryData(document.File.Bytes), document.MediaType);
@@ -371,12 +414,12 @@ public class DocumentProcessingService
         page.Text ??= rawText?.Replace("\0", "");
         if (shouldGenerateOverviews)
         {
-            await DocumentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
+            await _documentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
         }
 
         if (shouldDetectSectionTitles)
         {
-            await DocumentAnalysisService.DetectSectionTitlesAsync(document).ConfigureAwait(false);
+            await _documentAnalysisService.DetectSectionTitlesAsync(document).ConfigureAwait(false);
         }
 
         if (IsPageEmbeddingValid(page))
@@ -398,36 +441,39 @@ public class DocumentProcessingService
     private async Task ProcessPdfPagesAsync(Document document, bool shouldGenerateOverviews, bool shouldDetectSectionTitles)
     {
         _logger.LogInformation("Processing PDF document {DocumentName}.", document.Name);
-        if (document.File is null)
-        {
-            _logger.LogError("Document {DocumentName} does not have a File.", document.Name);
-            return;
-        }
+        CheckIfFileIsNull(document);
 
         await GetPdfPagesRawTextsAsync(document).ConfigureAwait(false);
         if (shouldGenerateOverviews)
         {
-            await DocumentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
+            await _documentAnalysisService.GenerateOverviewsAsync(document).ConfigureAwait(false);
         }
 
         if (shouldDetectSectionTitles)
         {
-            await DocumentAnalysisService.DetectSectionTitlesAsync(document).ConfigureAwait(false);
+            await _documentAnalysisService.DetectSectionTitlesAsync(document).ConfigureAwait(false);
         }
 
         await GetEmbeddingsAsync(document).ConfigureAwait(false);
     }
 
+
+    //will be refactor
     private async Task GetEmbeddingsAsync(Document document)
     {
         var pagesToEmbed = document.Pages.Where(p => !IsPageEmbeddingValid(p) && !string.IsNullOrWhiteSpace(p.Overview)).ToList();
-        int countAlreadyEmbedded = document.Pages.Where(p => p.EmbeddingVector is not null).Count();
-        int countErroneous = document.Pages.Where(p => p.EmbeddingVector?.Model == ERROR_VECTOR_MODEL).Count();
-        _logger.LogInformation("Document {DocumentName} has {CountPages} pages, {CountAlreadyEmbedded} pages already embedded, {CountErroneous} pages with erroneous embeddings, {CountToEmbed} pages to embed.", document.Name, document.Pages.Count, countAlreadyEmbedded, countErroneous, pagesToEmbed.Count);
         if (pagesToEmbed.Count == 0)
         {
             return;
         }
+        _logger.LogInformation(
+                      "Embedding {CountToEmbed} pages for document {DocumentName}.",
+                      pagesToEmbed.Count, document.Name
+                  );
+        int countAlreadyEmbedded = document.Pages.Where(p => p.EmbeddingVector is not null).Count();
+        int countErroneous = document.Pages.Where(p => p.EmbeddingVector?.Model == ERROR_VECTOR_MODEL).Count();
+        _logger.LogInformation("Document {DocumentName} has {CountPages} pages, {CountAlreadyEmbedded} pages already embedded, {CountErroneous} pages with erroneous embeddings, {CountToEmbed} pages to embed.", document.Name, document.Pages.Count, countAlreadyEmbedded, countErroneous, pagesToEmbed.Count);
+
 
         var texts = pagesToEmbed.Select(p => p.Overview ?? $"An overview for this content is currently unavailable").ToList();
         List<double[]> allEmbeddings = [];
@@ -455,15 +501,24 @@ public class DocumentProcessingService
         }
     }
 
-    private static async Task GetPdfPagesRawTextsAsync(Document document)
+    private async Task GetPdfPagesRawTextsAsync(Document document)
     {
-        using var ms = new MemoryStream(document.File?.Bytes ?? throw new InvalidOperationException("Document file is null."));
+        CheckIfFileIsNull(document);
+        using var ms = new MemoryStream(document.File.Bytes);
         using PdfDocument pdf = new(ms);
         Dictionary<int, string> pagesTexts = await PdfExtractor.ExtractPaginatedTextAsync(pdf, Enumerable.Range(1, pdf.Pages.Count)).ConfigureAwait(false);
         foreach ((int pageNumber, string pageText) in pagesTexts)
         {
-            Page page = document[pageNumber];
-            page.RawText ??= pageText.Replace("\0", "");
+            document[pageNumber].RawText = pageText.Replace("\0", "");
+        }
+    }
+
+    private void CheckIfFileIsNull(Document document)
+    {
+        if (document.File is null)
+        {
+            _logger.LogError("Document {DocumentName} does not have a File.", document.Name);
+            return;
         }
     }
 
