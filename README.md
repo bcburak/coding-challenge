@@ -29,4 +29,13 @@ classes are there to provide context and mock dependencies.
 - You can use any tools or libraries you like. But if possible, make notes of the
   tools you used and why you chose them.
 
+## Refactor Notes
+
+ - Refactored each methods in DocumentProcessingService
+ - Injected useful classes and libraries to do it more readeble and testable
+ - Splitted smaller methods, removed unnecesserary objects ..
+ - Could be still need to do more refactor, that's why I dropped small inline comments where it could be neccessery to improve
+ - Used moq library to mock some data or if it'd be necessary for future developments.
+ - Added more unit tests and still could be needed to add new unit test cases.(Also dropped comments for assertions and UT methods but could not complete since the time concerns)
+
 **Good luck!**
