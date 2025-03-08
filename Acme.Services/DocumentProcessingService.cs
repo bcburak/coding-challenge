@@ -295,13 +295,10 @@ public class DocumentProcessingService
     private async Task ProcessCsvPagesAsync(Document document)
     {
         _logger.LogInformation("Processing CSV document {DocumentName}.", document.Name);
-        if (document.File is null)
-        {
-            _logger.LogError("Document {DocumentName} does not have a File.", document.Name);
-            return;
-        }
 
-        using var ms = new MemoryStream(document.File?.Bytes ?? throw new InvalidOperationException("Document file is null."));
+        EnsureDocumentHasFile(document);
+
+        using var ms = new MemoryStream(document.File?.Bytes);
         Page page = document[1];
         page.RawText = Encoding.UTF8.GetString(ms.ToArray());
         var stringBuilder = new StringBuilder(page.RawText.Length * 2);
@@ -355,7 +352,7 @@ public class DocumentProcessingService
 
         if (document.Pages.Count == 0)
         {
-            using var ms = new MemoryStream(document.File?.Bytes ?? throw new InvalidOperationException("Document file is null."));
+            using var ms = new MemoryStream(document.File?.Bytes);
             var workbook = new Workbook(ms);
             await _excelSheetAnalysisService.ChunkSheetsAsync(document, workbook).ConfigureAwait(false);
         }
@@ -513,7 +510,7 @@ public class DocumentProcessingService
     private async Task GetPdfPagesRawTextsAsync(Document document)
     {
         EnsureDocumentHasFile(document);
-        using var ms = new MemoryStream(document.File.Bytes);
+        using var ms = new MemoryStream(document.File?.Bytes);
         using PdfDocument pdf = new(ms);
         Dictionary<int, string> pagesTexts = await PdfExtractor.ExtractPaginatedTextAsync(pdf, Enumerable.Range(1, pdf.Pages.Count)).ConfigureAwait(false);
         foreach ((int pageNumber, string pageText) in pagesTexts)
